@@ -5,9 +5,11 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import os
 from pathlib import Path
 
@@ -78,6 +80,44 @@ activities = {
 }
 
 
+# User model
+class User(BaseModel):
+    email: str
+    name: str
+    role: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+# In-memory user database
+users = {
+    "admin@mergington.edu": {"name": "Admin User", "role": "admin", "password": "admin123"},
+    "student@mergington.edu": {"name": "Student User", "role": "student", "password": "student123"}
+}
+
+# Auth
+security = HTTPBearer()
+tokens = {}  # token -> user dict
+
+@app.post("/login")
+def login(request: LoginRequest):
+    user_data = users.get(request.email)
+    if not user_data or user_data["password"] != request.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = f"token_{request.email}_{len(tokens)}"  # simple unique token
+    user = {"email": request.email, "name": user_data["name"], "role": user_data["role"]}
+    tokens[token] = user
+    return {"token": token, "user": user}
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    user = tokens.get(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
@@ -88,9 +128,19 @@ def get_activities():
     return activities
 
 
+@app.get("/admin/activities")
+def admin_get_activities(user: dict = Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return activities
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(activity_name: str, email: str, user: dict = Depends(get_current_user)):
     """Sign up a student for an activity"""
+    if user["role"] not in ["student", "admin"]:
+        raise HTTPException(status_code=403, detail="Only students and admins can sign up")
+    
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
